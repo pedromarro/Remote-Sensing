@@ -1,0 +1,87 @@
+//
+// This script calculates the NDVI in El Paso, Texas
+// using Copernicus Sentinel 2 images from 2020-09-01 to 2020-12-31
+// link to the GEE Script: https://code.earthengine.google.com/22208a61eef0ada4fe1419dc349f64a0
+//Prepared by: Pedro Marroquín
+// Date of creation: 12/april/2023
+
+
+var sentinel_S2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED");
+
+
+var filtered_S2 = sentinel_S2
+                           .filterDate ('2020-09-01', '2020-12-31')
+                           .filterBounds(geometry)
+                           .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50));
+print('filtered_S2', filtered_S2);
+print('filtered_S2 size',filtered_S2.size());
+
+
+var apply_radiometric_scale = function (image)
+{
+  return image.multiply(0.0001);
+};
+var radiometrically_scaled_filtered_S2 = filtered_S2.map(apply_radiometric_scale);
+
+
+var image = radiometrically_scaled_filtered_S2.median().select( ['B2', 'B3', 'B4', 'B8']);//first();
+
+
+var RED = image.select('B4');
+var NIR = image.select('B8');
+var numerator = NIR.subtract(RED);
+var denominator = NIR.add(RED);
+var NDVI = numerator.divide(denominator);
+print('NDVI',NDVI);
+
+
+NDVI = NDVI.rename('ndvi');
+print('NDVI',NDVI);
+
+
+var NDVI_bis = image.normalizedDifference(['B8', 'B4']);
+
+
+Map.addLayer(image, {'bands': ['B4', 'B3', 'B2'], min: 0,   max: 0.3}, 'image (RGB - true color)');
+Map.addLayer(NIR, {'bands': ['B8'], min: 0,   max: 0.3}, 'NIR');
+Map.addLayer(RED, {'bands': ['B4'], min: 0,   max: 0.3}, 'RED');
+Map.addLayer(NDVI, {min:-1, max:1}, 'NDVI');
+Map.addLayer(NDVI_bis, {min:-1, max:1}, 'NDVI_bis');
+Map.centerObject(geometry);
+
+
+Map.addLayer(image, {bands: [ 'B8','B4', 'B3'], min:0, max:0.3}, 'NIR-RED-GREEN false-color composite');
+
+
+var mask_NDVI = NDVI.gt(0.3);
+Map.addLayer(mask_NDVI,{}, 'mask_NDVI');
+
+
+var masked_image = image.updateMask(mask_NDVI);
+Map.addLayer(masked_image, {'bands': ['B4', 'B3', 'B2'], min: 0,   max: 0.3}, 'masked image (RGB)');
+
+
+var nominal_spatial_resolution = filtered_S2.first().select('B8').projection().nominalScale();
+print('nominal_spatial_resolution B8',nominal_spatial_resolution);
+
+
+var image_bounding_box = filtered_S2.first().geometry().bounds(nominal_spatial_resolution);
+Map.addLayer(image_bounding_box, {}, 'first image bounding box', false);
+
+
+var n_pixels_from_reducer = masked_image.reduceRegion(
+        {
+          reducer: ee.Reducer.count(),
+          maxPixels: 1e29,
+          scale: nominal_spatial_resolution,
+          bestEffort: false,
+          geometry: image_bounding_box,
+          tileScale:1//default is 1
+        });
+print('n_pixels_from_reducer',n_pixels_from_reducer);
+print('number of pixels with healty vegetation (B8-> NIR)',n_pixels_from_reducer.get('B8') );
+
+
+var area_m2 =ee.Number(n_pixels_from_reducer.get('B8')).multiply(nominal_spatial_resolution).multiply(nominal_spatial_resolution);
+var area_km2 = area_m2.divide(1000).divide(1000);
+print('healty vegetation area (km2)', area_km2);
