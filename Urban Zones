@@ -1,0 +1,166 @@
+//
+// This script calculates the urban zones in Chimaltenango City in Guatemala
+// using Open Buildings V3
+// link to the GEE Script: https://code.earthengine.google.com/3ac31ed223e82ba5148937a19f223739 
+//Prepared by: Pedro Marroquín
+// Date of creation: 10/april/2026
+
+
+
+
+//inputs
+var roi = ee.Geometry.Polygon(
+    [[[-90.90289227435063,14.613115787527166],
+      [-90.90289227435063,14.649407468900934],
+      [-90.94958416888188,14.649407468900934],
+      [-90.94958416888188,14.613115787527166]]]);
+
+
+Map.centerObject(roi, 14);
+Map.addLayer(roi, {color: 'red'}, 'ROI');
+
+
+// Open Buildings V3
+var buildings = ee.FeatureCollection('GOOGLE/Research/open-buildings/v3/polygons')
+  .filterBounds(roi);
+
+print('Muestra de atributos:', buildings.limit(5));
+print('Total edificios:', buildings.size());
+
+
+// Confidence Filter
+var buildingsFiltered = buildings.filter(ee.Filter.gte('confidence', 0.70));
+
+print('Edificios filtrados:', buildingsFiltered.size());
+
+Map.addLayer(
+  buildingsFiltered.style({
+    color: 'yellow',
+    fillColor: '00000000',
+    width: 1
+  }),
+  {},
+  'Buildings'
+);
+
+
+// Density
+var buildingCount = ee.Image().byte().paint({
+  featureCollection: buildingsFiltered,
+  color: 1
+}).clip(roi);
+
+var densitySmooth = buildingCount
+  .unmask(0)
+  .focalMean({
+    radius: 60,
+    units: 'meters'
+  })
+  .clip(roi);
+
+Map.addLayer(
+  densitySmooth,
+  {min: 0, max: 1, palette: ['white', 'orange', 'red']},
+  'Density'
+);
+
+
+// Umbral urbano
+var urbanMask = densitySmooth.gt(0.35).selfMask();
+
+Map.addLayer(
+  urbanMask,
+  {palette: ['orange']},
+  'Urban mask'
+);
+
+
+// Cleaning
+var urbanMaskClean = urbanMask
+  .focalMax({radius: 25, units: 'meters'})
+  .focalMin({radius: 25, units: 'meters'})
+  .selfMask();
+
+Map.addLayer(
+  urbanMaskClean,
+  {palette: ['red']},
+  'Urban clean'
+);
+
+
+// Vector
+var urbanZones = urbanMaskClean.reduceToVectors({
+  geometry: roi,
+  scale: 4,
+  geometryType: 'polygon',
+  eightConnected: true,
+  labelProperty: 'class',
+  reducer: ee.Reducer.countEvery(),
+  maxPixels: 1e10
+});
+
+print('Zonas urbanas:', urbanZones.size());
+
+
+// area and atributes
+var urbanZonesWithArea = urbanZones.map(function(feat) {
+  return feat.set({
+    AREA_SQM: feat.geometry().area(1),
+    FEAT_DATE: '2026 04 10',
+    SOURCE: 'Open Buildings V3 + density',
+    NAME: 'Zona urbana'
+  });
+});
+
+var urbanZonesFinal = urbanZonesWithArea
+  .filter(ee.Filter.gte('AREA_SQM', 10000));
+
+print('Zonas filtradas:', urbanZonesFinal.size());
+
+Map.addLayer(
+  urbanZonesFinal.style({
+    color: 'cyan',
+    fillColor: '00000044',
+    width: 2
+  }),
+  {},
+  'Urban zones'
+);
+
+
+// ID and
+var countFinal = urbanZonesFinal.size();
+var urbanList = urbanZonesFinal.toList(countFinal);
+
+var urbanZonesNamed = ee.FeatureCollection(
+  ee.List.sequence(0, countFinal.subtract(1)).map(function(i) {
+    i = ee.Number(i);
+    var f = ee.Feature(urbanList.get(i));
+    return f.set({
+      ID: i.add(1),
+      ZONA_NAME: ee.String('Zona urbana ').cat(i.add(1).format())
+    });
+  })
+);
+
+Map.addLayer(
+  urbanZonesNamed.style({
+    color: 'blue',
+    fillColor: '0000ff22',
+    width: 2
+  }),
+  {},
+  'Final zones'
+);
+
+
+// Export
+Export.table.toDrive({
+  collection: urbanZonesNamed,
+  description: 'Patzicia_Urban_Zones',
+  fileNamePrefix: 'Patzicia_Urban_Zones',
+  folder: 'GEE_Exports',
+  fileFormat: 'GeoJSON'
+});
+
+
