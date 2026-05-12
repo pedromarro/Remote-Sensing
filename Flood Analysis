@@ -1,0 +1,108 @@
+//
+// on november of 2020 the huricanes Eta and Iota striked Guatemala and Central America
+//This scprit analize the flooding during this event in Quiche, Guatemala
+// using Copernicus Sentinel 2 images from 2020-03-01 to 2020-11-30
+// link to the GEE Script: https://code.earthengine.google.com/c0027e9af8e41f35cd857d19529caf6f
+//Prepared by: Pedro Marroquín
+// Date of creation: 12/april/2023
+
+var Sentinel1 = ee.ImageCollection('COPERNICUS/S1_GRD');
+
+var S1collection= Sentinel1.filter(ee.Filter.eq('instrumentMode','IW'))
+                           .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+                           .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+                           .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING')) 
+                           .filter(ee.Filter.eq('resolution_meters',10))
+                           .filter(ee.Filter.bounds(geometry))
+                           .select(['VV', 'VH']);
+
+
+var beforeStart = '2020-03-01';
+var beforeEnd = '2020-03-30';
+var afterStart = '2020-11-01';
+var afterEnd = '2020-11-30';
+
+
+var beforeCollection = S1collection.filterDate(beforeStart, beforeEnd);
+var afterCollection = S1collection.filterDate(afterStart, afterEnd);
+print ('afterCollection',afterCollection);
+print('after coll size', afterCollection.size());
+print('beforeCollection', beforeCollection);
+print('before coll', beforeCollection.size());
+
+var before = beforeCollection.mosaic().clip(geometry);
+var after = afterCollection.mosaic().clip(geometry);
+
+
+Map.addLayer(before.select('VH'), {min:-25,max:0}, 'Before S1 mosaic VH', false);
+Map.addLayer(before.select('VV'), {min:-25,max:0}, 'Before S1 mosaic VV', false);
+Map.addLayer( after.select('VH'), {min:-25,max:0}, 'After S1 mosaic VH', false); 
+Map.addLayer( after.select('VV'), {min:-25,max:0}, 'After S1 mosaic VV', false); 
+Map.centerObject(geometry, 10);
+
+var addRatioBand = function(image) {
+var ratioBand = image.select('VV').divide(image.select('VH')).rename('VV/VH');
+return image.addBands(ratioBand);
+};
+
+var before_s1_for_false_color = addRatioBand(before);
+var after_s1_for_false_color = addRatioBand(after);
+print('before_s1_for_false_color',before_s1_for_false_color);
+print('after_s1_for_false_color',after_s1_for_false_color);
+
+Map.addLayer(before_s1_for_false_color, {bands:['VV', 'VH', 'VV/VH'], min:[-25, -25, 0] ,max:[0, 0, 2]}, 'Before Floods false color');
+Map.addLayer(after_s1_for_false_color, {bands:['VV', 'VH', 'VV/VH'],min:[-25, -25, 0] ,max:[0, 0, 2]}, 'After Floods false color'); 
+
+var SWI_formula = '0.1747 * VV +0.0082 * VH * VV +0.0023 * VV *VV - 0.0015 * VH * VH+0.1904';
+var SWI_before = ee.Image().expression({
+  expression: SWI_formula,
+  map:  {
+          VV: before.select('VV'),
+          VH: before.select('VH')
+  }}).rename('SWI');
+var SWI_after = ee.Image().expression({
+  expression: SWI_formula,
+  map: {
+    VV: after.select('VV'),
+    VH: after.select('VH')
+  }
+}).rename('SWI');
+Map.addLayer(SWI_before, {}, 'SWI before', false);
+Map.addLayer(SWI_after, {}, 'SWI after', false);
+
+var mask_before = SWI_before.gt(0.2);
+var mask_after  =  SWI_after.gt(0.2);
+
+
+var masked_before_s1_for_false_color = before_s1_for_false_color.updateMask(mask_before);
+var masked_after_s1_for_false_color = after_s1_for_false_color.updateMask(mask_after);
+Map.addLayer(masked_before_s1_for_false_color, {min:[-25, -25, 0] ,max:[0, 0, 2]}, 'Before Floods masked');
+Map.addLayer( masked_after_s1_for_false_color, {min:[-25, -25, 0] ,max:[0, 0, 2]}, 'After Floods masked');
+
+
+ 
+var l8 = ee.ImageCollection("LANDSAT/LC08/C02/T1");
+
+var l8_filtered = l8.filterBounds(geometry)
+                    .filter(ee.Filter.lt('CLOUD_COVER', 50));
+
+var l8_filtered_before = l8_filtered.filterDate(beforeStart, beforeEnd);
+
+var l8_composite_before = ee.Algorithms.Landsat.simpleComposite({
+  collection: l8_filtered_before,
+  asFloat: true
+});
+
+var l8_filtered_after = l8_filtered.filterDate(afterStart, afterEnd);
+
+var l8_composite_after = ee.Algorithms.Landsat.simpleComposite({
+  collection: l8_filtered_after, 
+  asFloat: true
+});
+
+print('l8_composite_before',l8_composite_before);
+print('l8_filtered',l8_filtered_before.size());
+print('l8_composite_after',l8_composite_after);
+print('l8_filtered_after',l8_filtered_after.size());
+Map.addLayer(l8_composite_before,{'bands': ['B3', 'B2', 'B1'], 'min':0, 'max':0.3}, 'l8_composite_before', false);
+Map.addLayer(l8_composite_after, {'bands': ['B3', 'B2', 'B1'], 'min':0, 'max':0.3}, 'l8_composite_after', false);
