@@ -1,0 +1,106 @@
+//
+// This script calculates the  wildfire detection in Peten, Guatemala
+// using Copernicus Sentinel 2 images from 2020-03-01 to 2020-05-31
+// link to the GEE Script: https://code.earthengine.google.com/f149a42fcb6236669f669ee261b14bbc
+//Prepared by: Pedro Marroquín
+// Date of creation: 11/November/2025
+
+// Fechas pre y post incendio
+var preFire = '2020-03-01';
+var postFire = '2020-05-01';
+var preEnd = '2020-03-31';
+var postEnd = '2020-05-31';
+
+// Umbral de severidad (ajustable)
+var threshold = 0.27;
+
+function maskS2sr(image) {
+  var cloudProb = image.select('MSK_CLDPRB');
+  var snowProb = image.select('MSK_SNWPRB');
+  var scl = image.select('SCL');
+
+  var shadow = scl.eq(3);
+  var clouds = scl.eq(8);
+  var cirrus = scl.eq(10);
+
+  var mask = cloudProb.lt(5)
+    .and(snowProb.lt(5))
+    .and(clouds.not())
+    .and(cirrus.not())
+    .and(shadow.not());
+
+  return image.updateMask(mask);
+}
+
+function getNBR(image) {
+  var nbr = image.normalizedDifference(['B8', 'B12']).rename('NBR');
+  return image.addBands(nbr);
+}
+
+// Colección Sentinel-2
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterBounds(geometry)
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+  .map(maskS2sr)
+  .map(getNBR);
+
+// Compuestos pre y post incendio
+var pre = s2
+  .filterDate(preFire, preEnd)
+  .median()
+  .clip(geometry);
+
+var post = s2
+  .filterDate(postFire, postEnd)
+  .median()
+  .clip(geometry);
+
+// dNBR
+var dNBR = pre.select('NBR')
+  .subtract(post.select('NBR'))
+  .rename('dNBR');
+
+// Área quemada usando umbral
+var burned = dNBR.gt(threshold).selfMask();
+
+// Calcular área quemada
+var areaImage = burned.multiply(ee.Image.pixelArea());
+
+var area = areaImage.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: geometry,
+  scale: 20,
+  maxPixels: 1e13
+});
+
+// Convertir a hectáreas
+var burnedAreaHa = ee.Number(area.get('dNBR')).divide(10000);
+
+print('Área quemada (ha):', burnedAreaHa);
+
+// Visualización
+Map.centerObject(geometry, 9);
+
+Map.addLayer(
+  dNBR,
+  {
+    min: 0,
+    max: 1,
+    palette: ['white', 'yellow', 'orange', 'red', 'black']
+  },
+  'dNBR'
+);
+
+Map.addLayer(
+  burned,
+  {
+    palette: ['red']
+  },
+  'Área quemada'
+);
+
+Map.addLayer(
+  geometry,
+  {color: 'blue'},
+  'Área de estudio'
+);
