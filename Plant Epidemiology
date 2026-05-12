@@ -1,0 +1,262 @@
+//
+// Mistletoe incidence (Psittacanthus sp.) in USAC main campus in Guatemala City, Guatemala
+// link to the GEE Script: https://code.earthengine.google.com/d8a8405e074c0458ed7686fbd87963e4
+//Prepared by: Pedro Marroquín
+// Date of creation: 10/October/2025
+
+// ==============================
+// 0) PARÁMETROS
+// ==============================
+var ASSET_ID = 'projects/pedromarro/assets/Muerdago'; // tu tabla
+
+// ==============================
+// 1) POLÍGONO DEL ÁREA USAC
+// ==============================
+var coords = [
+  [-90.55178297999613,14.589461262383258],
+  [-90.5535425091099,14.589544325490028],
+  [-90.55403603556864,14.589191307069784],
+  [-90.55442227366679,14.587799993665989],
+  [-90.55519474986308,14.58549496255745],
+  [-90.55677548710575,14.584477418624978],
+  [-90.55710020214555,14.582021471099623],
+  [-90.55677833706376,14.581502308431029],
+  [-90.55604877621171,14.581253109915417],
+  [-90.55486860424516,14.581211576802078],
+  [-90.55418195873735,14.581709973645317],
+  [-90.55353822857377,14.582561398976804],
+  [-90.55315199047563,14.58299749360359],
+  [-90.55240097195146,14.583080559148879],
+  [-90.55192890316484,14.582955960819199],
+  [-90.55164995342729,14.583267456511223],
+  [-90.5514353767061,14.584160408386511],
+  [-90.55134954601762,14.585261018506692],
+  [-90.55092039257524,14.585427147858304],
+  [-90.54877462536332,14.585115655221202],
+  [-90.54810943752763,14.588375922990755],
+  [-90.54544868618486,14.588043668612153],
+  [-90.54542722851274,14.58852128412372],
+  [-90.55178297999613,14.589461262383258]
+];
+var areaUSAC = ee.Geometry.Polygon([coords], null, false);
+Map.centerObject(areaUSAC, 16);
+Map.addLayer(areaUSAC, {color: 'red'}, 'Área USAC');
+
+// ==============================
+// 2) CARGAR TABLA
+// ==============================
+var base = ee.FeatureCollection(ASSET_ID);
+
+// RECONSTRUIR GEOMETRÍA DESDE Lon/Lat 
+var puntosLonLat = base.map(function(f){
+  var lon = ee.Number(f.get('Lon'));
+  var lat = ee.Number(f.get('Lat'));
+  
+  return ee.Algorithms.If(
+    lon.and(lat),
+    f.setGeometry(ee.Geometry.Point([lon, lat])),
+    null
+  );
+});
+// Limpia nulos
+puntosLonLat = ee.FeatureCollection(puntosLonLat).filter(ee.Filter.notNull(['system:index']));
+
+// VERSIÓN "SWAP" (por si se invirtieron columnas al subir)
+var puntosLatLonSwap = base.map(function(f){
+  var lon = ee.Number(f.get('Lat')); // invertido
+  var lat = ee.Number(f.get('Lon')); // invertido
+  return ee.Algorithms.If(
+    lon.and(lat),
+    f.setGeometry(ee.Geometry.Point([lon, lat])),
+    null
+  );
+});
+puntosLatLonSwap = ee.FeatureCollection(puntosLatLonSwap).filter(ee.Filter.notNull(['system:index']));
+
+// ==============================
+// 3) ELEGIR LA VERSIÓN QUE CAE DENTRO DEL POLÍGONO
+// ==============================
+var dentroLonLat = puntosLonLat.filterBounds(areaUSAC);
+var dentroSwap   = puntosLatLonSwap.filterBounds(areaUSAC);
+
+
+var useSwap = ee.Algorithms.If(dentroLonLat.size().gt(0), false, true);
+var puntosCorr = ee.FeatureCollection(ee.Algorithms.If(useSwap, puntosLatLonSwap, puntosLonLat));
+var puntosUSAC = ee.FeatureCollection(ee.Algorithms.If(useSwap, dentroSwap, dentroLonLat));
+
+// Debug visual: bounds de los puntos
+Map.addLayer(puntosCorr.geometry().bounds(), {color: 'blue'}, 'Bounds puntos (debug)', false);
+
+print('Total puntos en tabla:', base.size());
+print('Puntos con geometría (reconstruidos):', puntosCorr.size());
+print('Puntos dentro del área USAC:', puntosUSAC.size());
+print('¿Usando versión SWAP (Lat como lon y Lon como lat)?', useSwap);
+
+// ==============================
+// 4) SIMBOLOGÍA (Severidad / Incidencia)
+// ==============================
+var palette = ee.List(['#2ecc71','#a3e635','#facc15','#f59e0b','#f97316','#ef4444']);
+
+var styled = puntosUSAC.map(function (f) {
+  var sev = ee.Number(ee.Algorithms.If(f.get('Severidad'), f.getNumber('Severidad'), 0));
+  var inc = ee.Number(ee.Algorithms.If(f.get('Incidencia'), f.getNumber('Incidencia'), 0));
+  var idx = sev.round().int().max(0).min(5);
+  var color = ee.String(palette.get(idx));
+  var size  = inc.gt(0).multiply(8).add(inc.lte(0).multiply(4));
+  return f.set({style: {pointSize: size, color: color}});
+});
+
+Map.addLayer(styled.style({ styleProperty: 'style' }), {}, 'Árboles (Severidad/Incidencia)');
+
+// ==============================
+// 5) ESTADÍSTICAS (protegidas si hay 0 puntos)
+// ==============================
+var hayPuntos = puntosUSAC.size().gt(0);
+
+var incGeneral = ee.Number(ee.Algorithms.If(
+  hayPuntos,
+  // promedio de incidencia binaria (1 si >0)
+  ee.Number(
+    puntosUSAC.aggregate_array('Incidencia')
+      .map(function(x){ return ee.Number(x).gt(0) ? 1 : 0; })
+      .reduce(ee.Reducer.mean())
+  ).multiply(100),
+  null
+));
+var sevGeneral = ee.Algorithms.If(
+  hayPuntos, puntosUSAC.aggregate_mean('Severidad'), null
+);
+
+print('Incidencia general (%) en el área:', incGeneral);
+print('Severidad promedio (0–5) en el área:', sevGeneral);
+
+// ==============================
+// 6) HEATMAP (convolución gaussiana) + LEYENDA
+// ==============================
+
+// 6.1 Pintar valor 1 en cada punto (grosor de trazo opcional en metros)
+var ptsImg = ee.Image().toByte().paint({
+  featureCollection: puntosUSAC,
+  color: 1,
+  width: 5  // grosor del punto en metros aprox. (ajústalo si querés)
+});
+
+// 6.2 Kernel gaussiano (radio y sigma en metros)
+var kernel = ee.Kernel.gaussian({
+  radius: 60,    // radio de influencia (m)
+  sigma: 30,     // sigma (m)
+  units: 'meters',
+  normalize: true
+});
+
+// 6.3 Convolución (suavizado tipo heatmap)
+var density = ptsImg.convolve(kernel).clip(areaUSAC);
+
+// 6.4 Visualización
+var heatVis = {
+  min: 0,
+  max: 0.5, // 
+  palette: ['#ffffcc','#a1dab4','#41b6c4','#2c7fb8','#253494'] // claro -> oscuro
+};
+
+Map.addLayer(density, heatVis, 'Densidad (heatmap)', true);
+
+// Paletas (¡asegúrate que coincidan con las usadas en el mapa!)
+var sevColors = ['#2ecc71','#a3e635','#facc15','#f59e0b','#f97316','#ef4444'];
+var sevLabels = ['0 (sin infestación)','1','2','3','4','5 (máxima)'];
+var heatPalette = ['#ffffcc','#a1dab4','#41b6c4','#2c7fb8','#253494'];
+var heatMin = 0;      // mismos min/max que en tu heatVis
+var heatMax = 0.5;
+
+// Contenedor principal
+var legendCombo = ui.Panel({
+  style: {position: 'bottom-left', padding: '10px', width: '270px', backgroundColor: 'rgba(255,255,255,0.9)'}
+});
+
+// Título general
+legendCombo.add(ui.Label({
+  value: 'Leyenda',
+  style: {fontWeight: 'bold', fontSize: '14px', margin: '0 0 8px 0'}
+}));
+
+// --- Sección 1: Árboles (Severidad) ---
+legendCombo.add(ui.Label({
+  value: 'Árboles: Severidad (0–5)',
+  style: {fontWeight: 'bold', margin: '6px 0 6px 0'}
+}));
+
+function makeRow(color, label) {
+  var swatch = ui.Label('', {backgroundColor: color, padding: '8px', margin: '0 6px 0 0', border: '1px solid #999'});
+  var text = ui.Label(label, {margin: '0'});
+  return ui.Panel([swatch, text], ui.Panel.Layout.Flow('horizontal'));
+}
+
+for (var i = 0; i < sevColors.length; i++) {
+  legendCombo.add(makeRow(sevColors[i], sevLabels[i]));
+}
+
+// --- Sección 2: Incidencia (tamaño de punto) ---
+legendCombo.add(ui.Label({
+  value: 'Incidencia (tamaño de punto)',
+  style: {fontWeight: 'bold', margin: '10px 0 4px 0'}
+}));
+
+// Muestras de tamaño usando bolitas unicode
+var filaInc = ui.Panel({
+  widgets: [
+    ui.Label('●', {color: '#444', fontSize: '12px', margin: '0 6px 0 0'}),
+    ui.Label('Pequeño = 0 (sano)', {margin: '0 10px 0 0'}),
+    ui.Label('●', {color: '#444', fontSize: '18px', margin: '0 6px 0 16px'}),
+    ui.Label('Grande = 1 (afectado)', {margin: '0'})
+  ],
+  layout: ui.Panel.Layout.Flow('horizontal')
+});
+legendCombo.add(filaInc);
+
+// Separador visual
+legendCombo.add(ui.Label('', {margin: '6px 0', border: '1px solid #ddd'}));
+
+// --- Sección 3: Heatmap (Densidad) ---
+legendCombo.add(ui.Label({
+  value: 'Heatmap: Densidad de puntos',
+  style: {fontWeight: 'bold', margin: '6px 0 6px 0'}
+}));
+
+// Rampa de color (usando Thumbnail)
+var heatRamp = ui.Thumbnail({
+  image: ee.Image.pixelLonLat().select(0),
+  params: {
+    bbox: [0, 0, 1, 0.1],
+    dimensions: '220x12',
+    min: 0, max: 1,
+    palette: heatPalette,
+    format: 'png'
+  },
+  style: {stretch: 'horizontal', margin: '6px 0'}
+});
+legendCombo.add(heatRamp);
+
+// Etiquetas min/max (coherentes con heatMin/heatMax)
+legendCombo.add(ui.Panel({
+  widgets: [
+    ui.Label(heatMin, {margin: '0 6px 0 0'}),
+    ui.Label(heatMax, {margin: '0 0 0 170px', textAlign: 'right'})
+  ],
+  layout: ui.Panel.Layout.Flow('horizontal'),
+  style: {margin: '0 0 0 0'}
+}));
+
+
+// Añadir al mapa
+Map.add(legendCombo);
+
+// Exportar el heatmap a Google Drive
+Export.image.toDrive({
+  image: density,              // tu capa heatmap o styled.reduceToImage
+  description: 'heatmap_muerdago',
+  folder: 'GEE_exports',       // opcional, carpeta en Drive
+  scale: 10,                   // resolución en metros
+  region: areaUSAC,            // área a exportar
+  crs: 'EPSG:4326',            // sistema de coordenadas
+  maxPixels: 1e13
+});
